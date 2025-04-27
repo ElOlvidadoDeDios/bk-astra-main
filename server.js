@@ -33,19 +33,35 @@ const storage = multer.diskStorage({
 });
 
 const app = express();
-app.use(cors());
+
+//app.use(cors({ origin: true, credentials: true }));
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+
 app.use(bodyParser.json());
 
 // Configuración de la base de datos
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'astravon',
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
 };
+(async () => {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    console.log('Conexión exitosa a la base de datos');
+    await connection.end();
+  } catch (err) {
+    console.error('Error al conectar a la base de datos:', err.message);
+  }
+})();
 
 const pool = mysql.createPool(dbConfig);
 
@@ -73,6 +89,16 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     const resourceType = isVideo ? 'video' : 'image';
     const folder = isVideo ? 'astravon/videos' : 'astravon/images';
 
+    // Si es video, obtener duración
+    let duration = null;
+    if (isVideo) {
+      const getDuration = require('get-audio-duration');
+      const durationInSeconds = await getDuration.getAudioDurationInSeconds(req.file.path);
+      const minutes = Math.floor(durationInSeconds / 60);
+      const seconds = Math.floor(durationInSeconds % 60);
+      duration = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
     const uploadOptions = {
       resource_type: resourceType,
       folder: folder,
@@ -88,7 +114,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     res.json({ 
       url: result.secure_url,
       public_id: result.public_id,
-      resource_type: resourceType
+      resource_type: resourceType,
+      duration: duration
     });
   } catch (err) {
     if (req.file && fs.existsSync(req.file.path)) {
@@ -167,17 +194,17 @@ app.get('/api/modules', async (req, res) => {
       FROM Module
       LEFT JOIN School ON Module.SchoolId = School.Id
     `;
-    
+
     if (schoolId) {
       query += ' WHERE Module.SchoolId = ?';
     }
-    
+
     query += ' ORDER BY Module.\`Order\`';
-    
+
     const [rows] = schoolId 
       ? await pool.query(query, [schoolId])
       : await pool.query(query);
-    
+
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -241,17 +268,17 @@ app.get('/api/courses', async (req, res) => {
       FROM Course c
       LEFT JOIN Module m ON c.ModuleId = m.Id
     `;
-    
+
     if (moduleId) {
       query += ' WHERE c.ModuleId = ?';
     }
-    
+
     query += ' ORDER BY c.\`Order\`';
-    
+
     const [rows] = moduleId 
       ? await pool.query(query, [moduleId])
       : await pool.query(query);
-    
+
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -290,11 +317,11 @@ app.get('/api/courses/:id', async (req, res) => {
       LEFT JOIN Module m ON c.ModuleId = m.Id
       WHERE c.Id = ?
     `, [id]);
-    
+
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Curso no encontrado' });
     }
-    
+
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -342,17 +369,17 @@ app.get('/api/sections', async (req, res) => {
       FROM Section s
       LEFT JOIN Course c ON s.CourseId = c.Id
     `;
-    
+
     if (courseId) {
       query += ' WHERE s.CourseId = ?';
     }
-    
+
     query += ' ORDER BY s.\`Order\`';
-    
+
     const [rows] = courseId 
       ? await pool.query(query, [courseId])
       : await pool.query(query);
-    
+
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -421,13 +448,13 @@ app.get('/api/podcasts/programs/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const [program] = await pool.query('SELECT * FROM PodcastPrograms WHERE id = ?', [id]);
-    
+
     if (program.length === 0) {
       return res.status(404).json({ error: 'Programa no encontrado' });
     }
-    
+
     const [episodes] = await pool.query('SELECT * FROM PodcastEpisodes WHERE program_id = ? ORDER BY episode_number', [id]);
-    
+
     res.json({
       ...program[0],
       episodes
@@ -444,7 +471,7 @@ app.post('/api/podcasts/programs', async (req, res) => {
       'INSERT INTO PodcastPrograms (title, description, image_url, category) VALUES (?, ?, ?, ?)',
       [title, description, image_url, category]
     );
-    
+
     const [newProgram] = await pool.query('SELECT * FROM PodcastPrograms WHERE id = ?', [result.insertId]);
     res.status(201).json(newProgram[0]);
   } catch (err) {
@@ -456,12 +483,12 @@ app.put('/api/podcasts/programs/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, image_url, category } = req.body;
-    
+
     await pool.query(
       'UPDATE PodcastPrograms SET title = ?, description = ?, image_url = ?, category = ? WHERE id = ?',
       [title, description, image_url, category, id]
     );
-    
+
     const [updatedProgram] = await pool.query('SELECT * FROM PodcastPrograms WHERE id = ?', [id]);
     res.json(updatedProgram[0]);
   } catch (err) {
@@ -487,7 +514,7 @@ app.post('/api/podcasts/episodes', async (req, res) => {
       'INSERT INTO PodcastEpisodes (program_id, title, description, audio_url, duration, episode_number, publish_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [program_id, title, description, audio_url, duration, episode_number, publish_date]
     );
-    
+
     const [newEpisode] = await pool.query('SELECT * FROM PodcastEpisodes WHERE id = ?', [result.insertId]);
     res.status(201).json(newEpisode[0]);
   } catch (err) {
@@ -499,12 +526,12 @@ app.put('/api/podcasts/episodes/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, audio_url, duration, episode_number, publish_date } = req.body;
-    
+
     await pool.query(
       'UPDATE PodcastEpisodes SET title = ?, description = ?, audio_url = ?, duration = ?, episode_number = ?, publish_date = ? WHERE id = ?',
       [title, description, audio_url, duration, episode_number, publish_date, id]
     );
-    
+
     const [updatedEpisode] = await pool.query('SELECT * FROM PodcastEpisodes WHERE id = ?', [id]);
     res.json(updatedEpisode[0]);
   } catch (err) {
